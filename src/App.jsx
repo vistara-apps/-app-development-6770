@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { Toaster } from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import LeadsView from './components/LeadsView';
@@ -39,6 +40,17 @@ function App() {
           </main>
         </div>
       </div>
+      <Toaster 
+        position="top-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#1a1a2e',
+            color: '#eee6ff',
+            border: '1px solid #16213e'
+          }
+        }}
+      />
     </CRMProvider>
   );
 }

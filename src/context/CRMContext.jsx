@@ -1,4 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { dataService } from '../services/dataService.js';
+import { followUpService } from '../services/followUpService.js';
+import { useAccount } from 'wagmi';
+import toast from 'react-hot-toast';
 
 const CRMContext = createContext();
 
@@ -11,128 +15,206 @@ export const useCRM = () => {
 };
 
 export const CRMProvider = ({ children }) => {
-  const [leads, setLeads] = useState([
-    {
-      id: 1,
-      name: 'John Doe',
-      email: 'john@example.com',
-      phone: '+1234567890',
-      source: 'Website',
-      status: 'new',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 2,
-      name: 'Jane Smith',
-      email: 'jane@example.com',
-      phone: '+1234567891',
-      source: 'Referral',
-      status: 'contacted',
-      createdAt: new Date().toISOString(),
-    }
-  ]);
+  const { address } = useAccount();
+  const [user, setUser] = useState(null);
+  const [leads, setLeads] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  const [deals, setDeals] = useState([
-    {
-      id: 1,
-      leadId: 1,
-      name: 'Website Redesign',
-      value: 5000,
-      stage: 'proposal',
-      expectedCloseDate: '2024-02-15',
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 2,
-      leadId: 2,
-      name: 'Mobile App Development',
-      value: 15000,
-      stage: 'negotiation',
-      expectedCloseDate: '2024-03-01',
-      createdAt: new Date().toISOString(),
-    }
-  ]);
+  const [deals, setDeals] = useState([]);
+  const [customers, setCustomers] = useState([]);
+  const [interactions, setInteractions] = useState([]);
+  const [followUps, setFollowUps] = useState([]);
 
-  const [customers, setCustomers] = useState([
-    {
-      id: 1,
-      leadId: 1,
-      name: 'Acme Corp',
-      email: 'contact@acme.com',
-      tags: ['enterprise', 'priority'],
-      createdAt: new Date().toISOString(),
-    }
-  ]);
+  // Initialize user and load data when wallet connects
+  useEffect(() => {
+    const initializeUser = async () => {
+      if (!address) {
+        setUser(null);
+        setLeads([]);
+        setDeals([]);
+        setCustomers([]);
+        setInteractions([]);
+        setFollowUps([]);
+        setLoading(false);
+        return;
+      }
 
-  const [interactions, setInteractions] = useState([
-    {
-      id: 1,
-      dealId: 1,
-      customerId: null,
-      type: 'email',
-      notes: 'Sent initial proposal',
-      timestamp: new Date().toISOString(),
-    },
-    {
-      id: 2,
-      dealId: 2,
-      customerId: null,
-      type: 'call',
-      notes: 'Discussed project requirements',
-      timestamp: new Date().toISOString(),
-    }
-  ]);
+      try {
+        setLoading(true);
+        setError(null);
 
-  const addLead = (lead) => {
-    const newLead = {
-      ...lead,
-      id: Date.now(),
-      createdAt: new Date().toISOString(),
+        // Get or create user
+        let userData = await dataService.getUser(address);
+        if (!userData) {
+          userData = await dataService.createUser({
+            userId: address,
+            email: null,
+            farcasterId: null
+          });
+        }
+        setUser(userData);
+
+        // Load all data
+        await loadAllData(address);
+
+        // Start follow-up processing
+        followUpService.startBackgroundProcessing(address);
+
+      } catch (err) {
+        console.error('Error initializing user:', err);
+        setError(err.message);
+        toast.error('Failed to initialize user data');
+      } finally {
+        setLoading(false);
+      }
     };
-    setLeads(prev => [...prev, newLead]);
-    return newLead;
+
+    initializeUser();
+  }, [address]);
+
+  // Load all CRM data
+  const loadAllData = async (userId) => {
+    try {
+      const [leadsData, dealsData, customersData, interactionsData, followUpsData] = await Promise.all([
+        dataService.getLeads(userId),
+        dataService.getDeals(userId),
+        dataService.getCustomers(userId),
+        dataService.getInteractions(userId),
+        dataService.getFollowUps(userId)
+      ]);
+
+      setLeads(leadsData);
+      setDeals(dealsData);
+      setCustomers(customersData);
+      setInteractions(interactionsData);
+      setFollowUps(followUpsData);
+    } catch (err) {
+      console.error('Error loading data:', err);
+      throw err;
+    }
   };
 
-  const updateLead = (id, updates) => {
-    setLeads(prev => prev.map(lead => 
-      lead.id === id ? { ...lead, ...updates } : lead
-    ));
+  const addLead = async (leadData) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return null;
+    }
+
+    try {
+      const newLead = await dataService.createLead(leadData, address);
+      setLeads(prev => [newLead, ...prev]);
+      
+      // Schedule automated follow-ups
+      await followUpService.scheduleFollowUp('lead_created', newLead, address);
+      
+      toast.success(`Lead ${newLead.name} added successfully`);
+      return newLead;
+    } catch (error) {
+      console.error('Error adding lead:', error);
+      toast.error('Failed to add lead');
+      return null;
+    }
   };
 
-  const addDeal = (deal) => {
-    const newDeal = {
-      ...deal,
-      id: Date.now(),
-      createdAt: new Date().toISOString(),
-    };
-    setDeals(prev => [...prev, newDeal]);
-    return newDeal;
+  const updateLead = async (leadId, updates) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return;
+    }
+
+    try {
+      const updatedLead = await dataService.updateLead(leadId, updates, address);
+      setLeads(prev => prev.map(lead => 
+        lead.leadId === leadId ? updatedLead : lead
+      ));
+      toast.success('Lead updated successfully');
+    } catch (error) {
+      console.error('Error updating lead:', error);
+      toast.error('Failed to update lead');
+    }
   };
 
-  const updateDeal = (id, updates) => {
-    setDeals(prev => prev.map(deal => 
-      deal.id === id ? { ...deal, ...updates } : deal
-    ));
+  const addDeal = async (dealData) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return null;
+    }
+
+    try {
+      const newDeal = await dataService.createDeal(dealData, address);
+      setDeals(prev => [newDeal, ...prev]);
+      
+      // Schedule automated follow-ups based on stage
+      await followUpService.scheduleFollowUp('stage_changed', newDeal, address);
+      
+      toast.success(`Deal ${newDeal.name} created successfully`);
+      return newDeal;
+    } catch (error) {
+      console.error('Error adding deal:', error);
+      toast.error('Failed to create deal');
+      return null;
+    }
   };
 
-  const addCustomer = (customer) => {
-    const newCustomer = {
-      ...customer,
-      id: Date.now(),
-      createdAt: new Date().toISOString(),
-    };
-    setCustomers(prev => [...prev, newCustomer]);
-    return newCustomer;
+  const updateDeal = async (dealId, updates) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return;
+    }
+
+    try {
+      const updatedDeal = await dataService.updateDeal(dealId, updates, address);
+      setDeals(prev => prev.map(deal => 
+        deal.dealId === dealId ? updatedDeal : deal
+      ));
+
+      // If stage changed, schedule follow-ups
+      if (updates.stage) {
+        await followUpService.scheduleFollowUp('stage_changed', updatedDeal, address);
+      }
+
+      toast.success('Deal updated successfully');
+    } catch (error) {
+      console.error('Error updating deal:', error);
+      toast.error('Failed to update deal');
+    }
   };
 
-  const addInteraction = (interaction) => {
-    const newInteraction = {
-      ...interaction,
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-    };
-    setInteractions(prev => [...prev, newInteraction]);
-    return newInteraction;
+  const addCustomer = async (customerData) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return null;
+    }
+
+    try {
+      const newCustomer = await dataService.createCustomer(customerData, address);
+      setCustomers(prev => [newCustomer, ...prev]);
+      toast.success(`Customer ${newCustomer.name} added successfully`);
+      return newCustomer;
+    } catch (error) {
+      console.error('Error adding customer:', error);
+      toast.error('Failed to add customer');
+      return null;
+    }
+  };
+
+  const addInteraction = async (interactionData) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return null;
+    }
+
+    try {
+      const newInteraction = await dataService.createInteraction(interactionData, address);
+      setInteractions(prev => [newInteraction, ...prev]);
+      toast.success('Interaction logged successfully');
+      return newInteraction;
+    } catch (error) {
+      console.error('Error adding interaction:', error);
+      toast.error('Failed to log interaction');
+      return null;
+    }
   };
 
   const dealStages = [
@@ -144,18 +226,73 @@ export const CRMProvider = ({ children }) => {
     { id: 'closed-lost', name: 'Closed Lost', color: 'bg-red-500' },
   ];
 
+  // Convert a lead to a deal
+  const convertLeadToDeal = async (leadId, dealData) => {
+    if (!address) {
+      toast.error('Please connect your wallet first');
+      return null;
+    }
+
+    try {
+      const lead = leads.find(l => l.leadId === leadId);
+      if (!lead) {
+        toast.error('Lead not found');
+        return null;
+      }
+
+      const newDeal = await addDeal({
+        ...dealData,
+        leadId: leadId,
+        name: dealData.name || `Deal for ${lead.name}`
+      });
+
+      if (newDeal) {
+        // Update lead status
+        await updateLead(leadId, { status: 'converted' });
+      }
+
+      return newDeal;
+    } catch (error) {
+      console.error('Error converting lead to deal:', error);
+      toast.error('Failed to convert lead to deal');
+      return null;
+    }
+  };
+
+  // Get follow-up analytics
+  const getFollowUpAnalytics = async () => {
+    if (!address) return null;
+    return await followUpService.getFollowUpAnalytics(address);
+  };
+
   const value = {
+    // Data
+    user,
     leads,
     deals,
     customers,
     interactions,
+    followUps,
     dealStages,
+    
+    // State
+    loading,
+    error,
+    
+    // Actions
     addLead,
     updateLead,
     addDeal,
     updateDeal,
     addCustomer,
     addInteraction,
+    convertLeadToDeal,
+    
+    // Analytics
+    getFollowUpAnalytics,
+    
+    // Utilities
+    loadAllData: () => address ? loadAllData(address) : null,
   };
 
   return (
